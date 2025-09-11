@@ -1,0 +1,12 @@
+[project]
+name = "rlrapidresponse"
+version = "0.1.0"
+description = "RL-based simulator to optimize ambulance dispatch during mass casualty incidents (MCI)"
+requires-python = ">=3.10"
+dependencies = [
+    "gymnasium>=1.2.1",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "stable-baselines3[extra]>=2.7.0",
+    "tensorboard>=2.20.0",
+]
