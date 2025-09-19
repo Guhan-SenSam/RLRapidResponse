@@ -75,6 +75,72 @@ RLRapidResponse/
 
 ---
 
+## Lazy Ambulance Spawning Architecture
+
+### Design Philosophy
+Ambulances are **NOT** stored in scenario JSON files. Instead, scenarios store ambulance *configuration*, and the simulation engine spawns ambulances dynamically at runtime.
+
+### Why Lazy Spawning?
+
+**Problem with Eager Generation:**
+- 565 hospitals × 2 ambulances = 1,130+ objects per scenario
+- Massive JSON files (100+ KB per scenario)
+- Slow save/load times
+- Redundant data (hospital ambulances duplicate hospital lat/lon)
+
+**Solution with Lazy Spawning:**
+- Scenario JSON: ~10 KB (only casualties + config)
+- Fast save/load
+- Reproducible (seed-based spawning)
+- Clean separation: scenario = "what happened", simulation = "runtime state"
+
+### Implementation
+
+**Scenario JSON (Lightweight):**
+```json
+{
+  "incident_location": [37.87, -115.67],
+  "casualties": [...],
+  "ambulance_config": {
+    "ambulances_per_hospital": 2,
+    "ambulances_per_hospital_variation": 1,
+    "field_ambulances": 5,
+    "field_ambulance_radius_km": 10.0,
+    "seed": 123
+  },
+  "hospitals": [...],
+  "timestamp": 0,
+  "num_casualties": 60
+}
+```
+
+**Simulation Engine Initialization:**
+```python
+class SimulationEngine:
+    def __init__(self, scenario, policy):
+        self.scenario = scenario
+        self.policy = policy
+
+        # Spawn ambulances lazily from config
+        from scenario_generator import ScenarioGenerator
+        generator = ScenarioGenerator([], (0,0,0,0))  # Dummy init
+        self.ambulances = generator.spawn_ambulances(
+            scenario['incident_location'],
+            scenario['ambulance_config'],
+            scenario['hospitals']
+        )
+
+        # Same seed → same ambulances every time (reproducible)
+```
+
+**Benefits:**
+- ✅ Scenarios are configurations, not full state dumps
+- ✅ Gym environment can spawn fresh ambulances per episode
+- ✅ Easy to modify ambulance distribution (just change config)
+- ✅ Scales to 10,000+ hospitals without JSON bloat
+
+---
+
 ## Visualization & Control System Architecture
 
 ### Design Principles
@@ -438,7 +504,10 @@ npm run dev    # Runs on port 3000
 
 ### Core Design
 - **Single Master Agent**: One centralized PPO agent controls all ambulance dispatch (not multi-agent)
-- **Scale**: 5-10 ambulances, 8-10 hospitals, 50-80 casualties per scenario
+- **Scale**: Variable ambulances per scenario (hospital-based + field units), all hospitals in region, 50-80 casualties per scenario
+  - **Hospital-based ambulances**: Each hospital has n ± variation ambulances (e.g., 2 ± 1 per hospital)
+  - **Field ambulances**: m first responder units near incident (e.g., 3-5 units within 10km)
+  - **Total**: Typically 1000+ hospital-based + field units for realistic scenarios
 - **Triage**: START system (Red/Yellow/Green/Black)
 - **Routing**: OpenStreetMap (OSMnx) - real roads, NO traffic simulation
 - **Training**: 500 scenarios, PPO (Stable-Baselines3), 1-2M timesteps (~30-50 hours GPU)
@@ -455,6 +524,10 @@ npm run dev    # Runs on port 3000
 **Build simulator without RL**
 1. **Data & Maps**: Load hospitals from CSV, integrate OSMnx for selected region
 2. **Scenario Generator**: Random MCI locations, 50-80 casualties with realistic triage distribution (25% Red, 40% Yellow, 30% Green, 5% Black)
+   - **Lazy ambulance spawning**: Store ambulance *configuration* in scenario, not actual ambulances
+   - **Ambulance types**: Hospital-based (n ± variation per hospital) + field units (m within radius k of incident)
+   - **Design rationale**: Scenarios are lightweight configs; simulation engine spawns ambulances dynamically
+   - **Benefit**: RL agent decides which hospital's ambulances to dispatch, efficient JSON storage
 3. **Patient Model**: Markov deterioration (Red: 5%/min → Death, Yellow: 1%/5min → Red), survival = f(triage, time_to_hospital, trauma_level)
 4. **Deliverable**: Simulator runs with random ambulance policy
 
@@ -496,12 +569,13 @@ npm run dev    # Runs on port 3000
 ```python
 {
   'casualties': [[x, y, triage, health_state, time_elapsed], ...],  # Max 80
-  'ambulances': [[x, y, status, patient_onboard], ...],             # Max 10
-  'hospitals': [[x, y, trauma_level, current_load], ...],          # 8-10
+  'ambulances': [[x, y, status, patient_onboard, base_hospital_id], ...],  # Variable count (1000+)
+  'hospitals': [[x, y, trauma_level, current_load], ...],          # All hospitals in region
   'incident_location': [x, y],
   'elapsed_time': int
 }
 ```
+Note: Each ambulance has a `base_hospital_id` (or None for field units), enabling the RL agent to decide which hospital's resources to deploy.
 
 **Action Space**: For each idle ambulance → select (casualty_id, hospital_id) or "wait"
 Action masking prevents invalid actions (already-dispatched, deceased casualties)

@@ -32,13 +32,21 @@ This document provides detailed, actionable steps for implementing each phase of
 **Tasks**:
 1. Create class `ScenarioGenerator`:
    - `__init__(self, hospitals, region_bounds)`: Takes hospital list and lat/lon bounds
-   - `generate_scenario(num_casualties, num_ambulances)`: Returns scenario dict
+   - `generate_scenario(num_casualties, ambulances_per_hospital, ambulances_per_hospital_variation, field_ambulances, field_ambulance_radius_km, seed)`: Returns scenario dict
 2. Implement scenario generation:
    - Random MCI location within region bounds
    - Generate 50-80 casualties around incident location (Gaussian distribution, σ=500m)
    - Assign triage levels: 25% Red, 40% Yellow, 30% Green, 5% Black (numpy.random.choice)
-   - Place ambulances randomly within 10km radius of incident
-3. Scenario dict structure:
+   - **Store ambulance configuration (lazy spawning)**:
+     - Do NOT generate actual ambulances in scenario
+     - Store config parameters for later spawning by simulation engine
+     - Includes seed for reproducibility
+3. Implement `spawn_ambulances(incident_location, ambulance_config, hospitals)` method:
+   - Called by simulation engine at initialization
+   - **Hospital-based**: Each hospital gets `ambulances_per_hospital ± ambulances_per_hospital_variation` ambulances
+   - **Field units**: `field_ambulances` placed randomly within `field_ambulance_radius_km` of incident
+   - Uses config seed for reproducible spawning
+4. Scenario dict structure (lightweight):
    ```python
    {
        'incident_location': [lat, lon],
@@ -46,22 +54,30 @@ This document provides detailed, actionable steps for implementing each phase of
            {'id': 0, 'lat': ..., 'lon': ..., 'triage': 'RED', 'initial_health': 1.0},
            ...
        ],
-       'ambulances': [
-           {'id': 0, 'lat': ..., 'lon': ..., 'status': 'IDLE'},
-           ...
-       ],
+       'ambulance_config': {
+           'ambulances_per_hospital': 2,
+           'ambulances_per_hospital_variation': 1,
+           'field_ambulances': 5,
+           'field_ambulance_radius_km': 10.0,
+           'seed': 123  # For reproducibility
+       },
        'hospitals': [...],  # From hospital loader
-       'timestamp': 0
+       'timestamp': 0,
+       'num_casualties': int
    }
    ```
-4. Add method `save_scenario(scenario, filename)` to save as JSON
-5. Test: Generate 10 scenarios, verify triage distribution is approximately correct
+5. Add method `save_scenario(scenario, filename)` to save as JSON
+6. Add method `load_scenario(filename)` to load from JSON
+7. Test: Generate 10 scenarios, verify triage distribution and ambulance spawning
 
 **Acceptance Criteria**:
 - Generates scenarios with correct casualty counts (50-80)
 - Triage distribution matches target (25/40/30/5)
 - Casualties clustered around incident location
-- Can save/load scenarios from JSON
+- Scenario JSON is lightweight (no ambulances stored)
+- `spawn_ambulances()` creates hospital-based + field ambulances dynamically
+- Same seed produces identical ambulances (reproducibility)
+- Can save/load scenarios from JSON efficiently
 
 ---
 
@@ -127,6 +143,7 @@ This document provides detailed, actionable steps for implementing each phase of
 1. Create class `SimulationEngine`:
    - `__init__(self, scenario, policy)`: Takes scenario dict and policy function
    - Attributes: `current_time`, `casualties`, `ambulances`, `hospitals`, `event_log`, `metrics`
+   - **Spawn ambulances**: Call `ScenarioGenerator.spawn_ambulances()` during initialization using `scenario['ambulance_config']`
 2. Implement main simulation loop:
    ```python
    def run(self, max_time_minutes=180):
