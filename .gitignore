@@ -153,3 +153,6 @@ package-lock.json
 tmp/
 temp/
 *.tmp
+
+# Result json files from test runs
+results

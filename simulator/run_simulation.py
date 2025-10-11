@@ -67,35 +67,54 @@ def run_single_simulation(args, scenario_num: int = 1) -> Dict:
     Returns:
         Results dictionary
     """
-    # Load hospitals
-    print(f"Loading hospitals for region: {args.region}...")
-    hospitals = load_hospitals(region=args.region)
+    # Check if loading a pre-generated scenario
+    if hasattr(args, 'scenario_file') and args.scenario_file:
+        print(f"Loading scenario from file: {args.scenario_file}...")
+        with open(args.scenario_file, 'r') as f:
+            scenario = json.load(f)
 
-    if not hospitals:
-        raise ValueError(f"No hospitals found for region '{args.region}'")
+        hospitals = scenario['hospitals']
+        print(f"  Loaded scenario with {scenario['num_casualties']} casualties")
+        print(f"  Hospitals: {len(hospitals)}")
+        print(f"  Incident location: ({scenario['incident_location'][0]:.6f}, {scenario['incident_location'][1]:.6f})")
 
-    print(f"  Loaded {len(hospitals)} hospitals")
+        if 'metadata' in scenario:
+            print(f"  Scenario: {scenario['metadata'].get('location_name', 'Unknown')}")
+            print(f"  Description: {scenario['metadata'].get('description', 'N/A')}")
 
-    # Calculate region bounds
-    region_bounds = calculate_region_bounds(hospitals)
+        config = scenario['ambulance_config']
+        print(f"  Ambulance config: {config['ambulances_per_hospital']}±{config['ambulances_per_hospital_variation']} per hospital + {config['field_ambulances']} field units")
+    else:
+        # Generate random scenario
+        # Load hospitals
+        print(f"Loading hospitals for region: {args.region}...")
+        hospitals = load_hospitals(region=args.region)
 
-    # Create scenario generator
-    seed = args.seed + scenario_num if args.seed is not None else None
-    generator = ScenarioGenerator(hospitals, region_bounds, seed=seed)
+        if not hospitals:
+            raise ValueError(f"No hospitals found for region '{args.region}'")
 
-    # Generate scenario
-    print(f"\nGenerating scenario {scenario_num}...")
-    scenario = generator.generate_scenario(
-        num_casualties=args.casualties,
-        ambulances_per_hospital=args.ambulances_per_hospital,
-        ambulances_per_hospital_variation=args.ambulance_variation,
-        field_ambulances=args.field_ambulances,
-        field_ambulance_radius_km=args.field_radius,
-        seed=seed
-    )
+        print(f"  Loaded {len(hospitals)} hospitals")
 
-    print(f"  Casualties: {scenario['num_casualties']}")
-    print(f"  Ambulance config: {args.ambulances_per_hospital}±{args.ambulance_variation} per hospital + {args.field_ambulances} field units")
+        # Calculate region bounds
+        region_bounds = calculate_region_bounds(hospitals)
+
+        # Create scenario generator
+        seed = args.seed + scenario_num if args.seed is not None else None
+        generator = ScenarioGenerator(hospitals, region_bounds, seed=seed)
+
+        # Generate scenario
+        print(f"\nGenerating scenario {scenario_num}...")
+        scenario = generator.generate_scenario(
+            num_casualties=args.casualties,
+            ambulances_per_hospital=args.ambulances_per_hospital,
+            ambulances_per_hospital_variation=args.ambulance_variation,
+            field_ambulances=args.field_ambulances,
+            field_ambulance_radius_km=args.field_radius,
+            seed=seed
+        )
+
+        print(f"  Casualties: {scenario['num_casualties']}")
+        print(f"  Ambulance config: {args.ambulances_per_hospital}±{args.ambulance_variation} per hospital + {args.field_ambulances} field units")
 
     # Get policy
     policy = get_policy_function(args.policy)
@@ -120,15 +139,16 @@ def run_single_simulation(args, scenario_num: int = 1) -> Dict:
         'scenario_num': scenario_num,
         'timestamp': datetime.now().isoformat(),
         'configuration': {
-            'region': args.region,
-            'num_casualties': args.casualties,
-            'ambulances_per_hospital': args.ambulances_per_hospital,
-            'ambulance_variation': args.ambulance_variation,
-            'field_ambulances': args.field_ambulances,
-            'field_radius_km': args.field_radius,
+            'region': args.region if hasattr(args, 'region') and args.region else scenario.get('metadata', {}).get('region', 'N/A'),
+            'num_casualties': scenario['num_casualties'],
+            'ambulances_per_hospital': scenario['ambulance_config']['ambulances_per_hospital'],
+            'ambulance_variation': scenario['ambulance_config']['ambulances_per_hospital_variation'],
+            'field_ambulances': scenario['ambulance_config']['field_ambulances'],
+            'field_radius_km': scenario['ambulance_config']['field_ambulance_radius_km'],
             'policy': args.policy,
             'max_time': args.max_time,
-            'seed': seed
+            'seed': scenario['ambulance_config'].get('seed', None),
+            'scenario_file': args.scenario_file if hasattr(args, 'scenario_file') and args.scenario_file else None
         },
         'scenario': {
             'incident_location': scenario['incident_location'],
@@ -155,21 +175,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic simulation
+  # Run benchmark scenario
+  python simulator/run_simulation.py --scenario-file scenarios/benchmark/tampa_1.json --policy nearest
+
+  # Run benchmark scenario with different policy
+  python simulator/run_simulation.py --scenario-file scenarios/benchmark/tampa_2.json --policy triage
+
+  # Save benchmark scenario results
+  python simulator/run_simulation.py --scenario-file scenarios/benchmark/tampa_1.json \\
+      --policy load_balancing --output tampa1_results.json
+
+  # Generate random scenario
   python simulator/run_simulation.py --region CA --casualties 60 --policy random
 
-  # With custom ambulance configuration
+  # Random scenario with custom ambulance configuration
   python simulator/run_simulation.py --region CA --casualties 60 \\
       --ambulances-per-hospital 2 --ambulance-variation 1 \\
       --field-ambulances 5 --policy triage
 
-  # Run multiple scenarios and save results
+  # Run multiple random scenarios and save results
   python simulator/run_simulation.py --region CA --casualties 60 \\
       --policy load_balancing --num-scenarios 10 --output results.json
-
-  # Include detailed event log
-  python simulator/run_simulation.py --region CA --casualties 30 \\
-      --policy trauma --include-events --output detailed_results.json
 
 Available policies:
   random           - Random dispatch (baseline)
@@ -180,13 +206,20 @@ Available policies:
         """
     )
 
-    # Required arguments
-    parser.add_argument('--region', type=str, required=True,
-                        help='State abbreviation (e.g., CA, NY, TX)')
-    parser.add_argument('--casualties', type=int, required=True,
-                        help='Number of casualties (50-80 recommended)')
+    # Scenario source (mutually exclusive)
+    scenario_group = parser.add_mutually_exclusive_group(required=True)
+    scenario_group.add_argument('--scenario-file', type=str,
+                        help='Load pre-generated scenario from JSON file (e.g., scenarios/benchmark/tampa_1.json)')
+    scenario_group.add_argument('--region', type=str,
+                        help='Generate random scenario for state (e.g., CA, NY, TX)')
+
+    # Policy (required)
     parser.add_argument('--policy', type=str, required=True,
                         help='Dispatch policy to use')
+
+    # Scenario generation parameters (only for random scenarios)
+    parser.add_argument('--casualties', type=int, default=60,
+                        help='Number of casualties for random scenarios (default: 60)')
 
     # Ambulance configuration
     parser.add_argument('--ambulances-per-hospital', type=int, default=2,
@@ -199,8 +232,8 @@ Available policies:
                         help='Radius in km for field ambulance placement (default: 10.0)')
 
     # Simulation parameters
-    parser.add_argument('--max-time', type=int, default=180,
-                        help='Maximum simulation time in minutes (default: 180)')
+    parser.add_argument('--max-time', type=int, default=400,
+                        help='Maximum simulation time in minutes (default: 400)')
     parser.add_argument('--num-scenarios', type=int, default=1,
                         help='Number of scenarios to run (default: 1)')
     parser.add_argument('--seed', type=int, default=None,
@@ -221,6 +254,14 @@ Available policies:
         parser.error("--casualties must be positive")
     if args.num_scenarios < 1:
         parser.error("--num-scenarios must be positive")
+
+    # Validate scenario file if provided
+    if args.scenario_file and not os.path.exists(args.scenario_file):
+        parser.error(f"Scenario file not found: {args.scenario_file}")
+
+    # Check that num_scenarios is 1 when using scenario file
+    if args.scenario_file and args.num_scenarios > 1:
+        parser.error("--num-scenarios must be 1 when using --scenario-file")
 
     try:
         # Run simulations

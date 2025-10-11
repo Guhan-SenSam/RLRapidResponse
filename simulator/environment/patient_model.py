@@ -4,8 +4,6 @@ Patient Deterioration Model - Step 1.3
 Implements Markov deterioration model for MCI casualties based on START triage system.
 """
 
-from typing import Optional
-
 
 class PatientModel:
     """
