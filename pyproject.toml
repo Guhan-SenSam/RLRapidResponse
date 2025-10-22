@@ -7,6 +7,8 @@ dependencies = [
     "gymnasium>=1.2.1",
     "numpy>=2.2.6",
     "pandas>=2.3.3",
+    "scipy>=1.15.3",
+    "seaborn>=0.13.2",
     "stable-baselines3[extra]>=2.7.0",
     "tensorboard>=2.20.0",
 ]
