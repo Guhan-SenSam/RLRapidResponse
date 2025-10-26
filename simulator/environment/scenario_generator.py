@@ -43,7 +43,10 @@ class ScenarioGenerator:
         ambulances_per_hospital_variation: int = 1,
         field_ambulances: int = 3,
         field_ambulance_radius_km: float = 10.0,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        incident_location: Optional[Tuple[float, float]] = None,
+        manual_ambulances: Optional[List[Dict]] = None,
+        casualty_distribution_radius: float = 0.5
     ) -> Dict:
         """
         Generate a random MCI scenario configuration.
@@ -58,6 +61,8 @@ class ScenarioGenerator:
             field_ambulances: Number of ambulances randomly placed near incident (first responders)
             field_ambulance_radius_km: Radius in km for field ambulance placement around incident
             seed: Optional seed for ambulance spawning reproducibility (uses scenario RNG if None)
+            incident_location: Optional manual incident location (lat, lon) - if None, generates random
+            manual_ambulances: Optional list of manually placed ambulances [{'lat': x, 'lon': y}, ...]
 
         Returns:
             Scenario dictionary with structure:
@@ -72,8 +77,10 @@ class ScenarioGenerator:
                     'ambulances_per_hospital_variation': int,
                     'field_ambulances': int,
                     'field_ambulance_radius_km': float,
-                    'seed': int  # For reproducible spawning
+                    'seed': int,  # For reproducible spawning
+                    'manual': bool  # True if using manual ambulances
                 },
+                'manual_ambulances': [...] (optional, if manual_ambulances provided),
                 'hospitals': [...],  # From hospital loader
                 'timestamp': 0,
                 'num_casualties': int
@@ -81,23 +88,42 @@ class ScenarioGenerator:
         """
         min_lat, max_lat, min_lon, max_lon = self.region_bounds
 
-        # Generate random incident location within region bounds
-        incident_lat = self.rng.uniform(min_lat, max_lat)
-        incident_lon = self.rng.uniform(min_lon, max_lon)
-        incident_location = [incident_lat, incident_lon]
+        # Use provided incident location or generate random
+        if incident_location:
+            incident_lat, incident_lon = incident_location
+            incident_location = [incident_lat, incident_lon]
+        else:
+            incident_lat = self.rng.uniform(min_lat, max_lat)
+            incident_lon = self.rng.uniform(min_lon, max_lon)
+            incident_location = [incident_lat, incident_lon]
 
         # Generate casualties around incident location
-        casualties = self._generate_casualties(num_casualties, incident_lat, incident_lon)
+        casualties = self._generate_casualties(
+            num_casualties, 
+            incident_lat, 
+            incident_lon, 
+            radius_km=casualty_distribution_radius
+        )
 
-        # Store ambulance configuration (not actual ambulances)
-        # Simulation engine will spawn them lazily
-        ambulance_config = {
-            'ambulances_per_hospital': ambulances_per_hospital,
-            'ambulances_per_hospital_variation': ambulances_per_hospital_variation,
-            'field_ambulances': field_ambulances,
-            'field_ambulance_radius_km': field_ambulance_radius_km,
-            'seed': seed if seed is not None else self.rng.integers(0, 2**31)
-        }
+        # Store ambulance configuration
+        # If manual ambulances provided, store them; otherwise store generation config
+        if manual_ambulances:
+            # Manual mode: store actual ambulance locations
+            ambulance_config = {
+                'manual': True,
+                'count': len(manual_ambulances),
+                'seed': seed if seed is not None else self.rng.integers(0, 2**31)
+            }
+        else:
+            # Automatic mode: store configuration for lazy spawning
+            ambulance_config = {
+                'manual': False,
+                'ambulances_per_hospital': ambulances_per_hospital,
+                'ambulances_per_hospital_variation': ambulances_per_hospital_variation,
+                'field_ambulances': field_ambulances,
+                'field_ambulance_radius_km': field_ambulance_radius_km,
+                'seed': seed if seed is not None else self.rng.integers(0, 2**31)
+            }
 
         scenario = {
             'incident_location': incident_location,
@@ -108,9 +134,13 @@ class ScenarioGenerator:
             'num_casualties': num_casualties
         }
 
+        # Add manual ambulances if provided
+        if manual_ambulances:
+            scenario['manual_ambulances'] = manual_ambulances
+
         return scenario
 
-    def _generate_casualties(self, num_casualties: int, center_lat: float, center_lon: float) -> List[Dict]:
+    def _generate_casualties(self, num_casualties: int, center_lat: float, center_lon: float, radius_km: float = 0.5) -> List[Dict]:
         """
         Generate casualties clustered around incident location using Gaussian distribution.
 
@@ -118,17 +148,18 @@ class ScenarioGenerator:
             num_casualties: Number of casualties to generate
             center_lat: Incident center latitude
             center_lon: Incident center longitude
+            radius_km: Approximate radius of casualty distribution (standard deviation)
 
         Returns:
             List of casualty dictionaries
         """
         casualties = []
 
-        # Standard deviation for Gaussian distribution (approximately 500m)
+        # Standard deviation for Gaussian distribution
         # Using approximate conversion: 1 degree latitude ≈ 111 km
-        # So 500m ≈ 0.0045 degrees
-        sigma_lat = 0.0045
-        sigma_lon = 0.0045
+        # radius_km is treated as sigma (standard deviation)
+        sigma_lat = radius_km / 111.0
+        sigma_lon = radius_km / 111.0
 
         # Generate triage levels for all casualties
         triage_assignments = self.rng.choice(
