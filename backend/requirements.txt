@@ -1,0 +1,15 @@
+# Flask and web framework dependencies
+flask==3.0.0
+flask-socketio==5.3.5
+flask-cors==4.0.0
+python-socketio==5.10.0
+
+# Async support for WebSocket (gevent for Python 3.13+ compatibility)
+gevent==25.9.1
+gevent-websocket==0.10.1
+
+# Data processing (already in main project, but listed for backend isolation)
+numpy>=1.24.0
+
+# Optional: For better logging and monitoring
+python-json-logger==2.0.7
